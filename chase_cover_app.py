@@ -19,12 +19,9 @@ def create_dxf_buffer(width, length, flange_length, add_kickout, holes, project_
     doc.header["$INSUNITS"] = 1  # 1 = inches
     msp = doc.modelspace()
     
-    # Base rectangle (3D POLYLINE)
     msp.add_polyline3d([(0, 0, 0), (width, 0, 0), (width, length, 0), (0, length, 0)], close=True)
-    # Flange rectangle
     msp.add_polyline3d([(-flange_length, -flange_length, 0), (width + flange_length, -flange_length, 0),
                         (width + flange_length, length + flange_length, 0), (-flange_length, length + flange_length, 0)], close=True)
-    # Kickout rectangles
     if add_kickout:
         msp.add_polyline3d([(-flange_length - 0.5, -flange_length - 0.5, 0), (width + flange_length + 0.5, -flange_length - 0.5, 0),
                             (width + flange_length + 0.5, length + flange_length + 0.5, 0), (-flange_length - 0.5, length + flange_length + 0.5, 0)], close=True)
@@ -34,11 +31,9 @@ def create_dxf_buffer(width, length, flange_length, add_kickout, holes, project_
         msp.add_polyline3d([(-flange_length - 0.375, -flange_length - 0.375, 0), (width + flange_length + 0.375, -flange_length - 0.375, 0),
                             (width + flange_length + 0.375, length + flange_length + 0.375, 0), (-flange_length - 0.375, length + flange_length + 0.375, 0)], close=True)
     
-    # Circles for holes (2D entities, z=0)
     for hole in holes:
         msp.add_circle((hole["x"], hole["y"]), hole["diameter"] / 2)
     
-    # Save to temp file then read into buffer
     with tempfile.NamedTemporaryFile(delete=False, suffix=".dxf") as tmp:
         doc.saveas(tmp.name)
         with open(tmp.name, "rb") as f:
@@ -55,23 +50,27 @@ if "sketch_created" not in st.session_state:
     st.session_state.fig2d = None
     st.session_state.jpg_buffer = None
     st.session_state.holes = []
-    st.session_state.uploaded_files_data = []  # Store photo data
+    st.session_state.uploaded_files_data = []
     st.session_state.project_name = ""
     st.session_state.spark_details = ""
     st.session_state.spark_arrestor = False
     st.session_state.windband = False
+    st.session_state.fit_tolerance = 0.25
     st.session_state.additional_notes = ""
     st.session_state.color = "Not Selected"
     st.session_state.custom_color = ""
 
-# Outside Form: Inputs
-project_name = st.text_input("Project Name (Homeowner name or address)", value=st.session_state.project_name)
+# Input fields (Project Name first)
+project_name = st.text_input("Project Name (Owner name and/or property address)", value=st.session_state.project_name)
 
 col1, col2 = st.columns(2)
 with col1:
     width = st.number_input("Width (Left to Right)", min_value=0.0, step=0.1)
 with col2:
     length = st.number_input("Length (Front to Back. Back is always cricket side)", min_value=0.0, step=0.1)
+
+fit_tolerance = st.number_input("Fit Tolerance (Total, not per side)", 
+                                min_value=0.0, step=0.05, value=st.session_state.fit_tolerance, format="%.2f")
 
 col3, col4 = st.columns(2)
 with col3:
@@ -87,9 +86,9 @@ else:
 
 col5, col6 = st.columns(2)
 with col5:
-    spark_arrestor = st.checkbox("Spark Arrestor", value=st.session_state.spark_arrestor)
-with col6:
     windband = st.checkbox("Windband", value=st.session_state.windband)
+with col6:
+    spark_arrestor = st.checkbox("Spark Arrestor", value=st.session_state.spark_arrestor)
 
 if spark_arrestor:
     spark_details = st.text_input("Spark Arrestor Details", value=st.session_state.spark_details)
@@ -98,11 +97,9 @@ else:
 
 additional_notes = st.text_area("Additional Notes", value=st.session_state.additional_notes)
 
-# Number of Holes
 num_holes = st.number_input("Number of Holes", min_value=1, max_value=10, step=1, value=1)
 
 with st.form(key="measurement_form"):
-    # Chimney Holes Frame
     with st.expander("Chimney Holes", expanded=True):
         holes = []
         all_valid = True
@@ -122,14 +119,10 @@ with st.form(key="measurement_form"):
                 back = st.number_input("Back Distance", min_value=0.0, step=0.1, key=f"back_{i}")
             
             distances = {}
-            if left > 0:
-                distances["left"] = left
-            if right > 0:
-                distances["right"] = right
-            if front > 0:
-                distances["front"] = front
-            if back > 0:
-                distances["back"] = back
+            if left > 0: distances["left"] = left
+            if right > 0: distances["right"] = right
+            if front > 0: distances["front"] = front
+            if back > 0: distances["back"] = back
             
             if len(distances) < 3:
                 all_valid = False
@@ -166,48 +159,49 @@ if submit_button:
     if not all_valid:
         st.error("Please ensure at least 3 measurements are entered for each hole.")
     else:
-        # Store data in session state
         st.session_state.sketch_created = True
         st.session_state.holes = holes
-        # Store photo data with names
         st.session_state.uploaded_files_data = [(f.name, io.BytesIO(f.read())) for f in uploaded_files] if uploaded_files else []
         st.session_state.project_name = project_name
         st.session_state.spark_arrestor = spark_arrestor
         st.session_state.spark_details = spark_details
         st.session_state.windband = windband
+        st.session_state.fit_tolerance = fit_tolerance
         st.session_state.additional_notes = additional_notes
         st.session_state.color = color
         st.session_state.custom_color = custom_color
         
-        # 2D Sketch (Updated Colors)
+        adjusted_width = width + fit_tolerance
+        adjusted_length = length + fit_tolerance
+        
         fig2d, ax2d = plt.subplots()
-        ax2d.add_patch(plt.Rectangle((0, 0), width, length, fill=False, edgecolor="black", linestyle="-"))
-        ax2d.add_patch(plt.Rectangle((-flange_length, -flange_length), width + 2 * flange_length, 
-                                     length + 2 * flange_length, fill=False, edgecolor="blue", linestyle="-"))
+        ax2d.add_patch(plt.Rectangle((0, 0), adjusted_width, adjusted_length, fill=False, edgecolor="black", linestyle="-"))
+        ax2d.add_patch(plt.Rectangle((-flange_length, -flange_length), adjusted_width + 2 * flange_length, 
+                                     adjusted_length + 2 * flange_length, fill=False, edgecolor="blue", linestyle="-"))
         if add_kickout:
             ax2d.add_patch(plt.Rectangle((-flange_length - 0.5, -flange_length - 0.5), 
-                                         width + 2 * flange_length + 1, length + 2 * flange_length + 1, 
+                                         adjusted_width + 2 * flange_length + 1, adjusted_length + 2 * flange_length + 1, 
                                          fill=False, edgecolor="black", linestyle="-"))
             ax2d.add_patch(plt.Rectangle((-flange_length - 0.875, -flange_length - 0.875), 
-                                         width + 2 * flange_length + 1.75, length + 2 * flange_length + 1.75, 
+                                         adjusted_width + 2 * flange_length + 1.75, adjusted_length + 2 * flange_length + 1.75, 
                                          fill=False, edgecolor="gray", linestyle="-"))
         else:
             ax2d.add_patch(plt.Rectangle((-flange_length - 0.375, -flange_length - 0.375), 
-                                         width + 2 * flange_length + 0.75, length + 2 * flange_length + 0.75, 
+                                         adjusted_width + 2 * flange_length + 0.75, adjusted_length + 2 * flange_length + 0.75, 
                                          fill=False, edgecolor="gray", linestyle="-"))
         
         for i, hole in enumerate(holes):
             ax2d.add_patch(plt.Circle((hole["x"], hole["y"]), hole["diameter"] / 2, fill=False, edgecolor="red", linestyle="-"))
-            label = f"H{i+1}: D={hole['diameter']:.1f}"
-            distances_label = "\n".join([f"{k[:1].upper()}={v:.1f}" for k, v in hole["distances"].items()])
+            label = f"H{i+1}: D={hole['diameter']:.2f}"
+            distances_label = "\n".join([f"{k[:1].upper()}={v:.2f}" for k, v in hole["distances"].items()])
             ax2d.text(hole["x"], hole["y"], f"{label}\n{distances_label}", ha="center", va="center", fontsize=8)
         
-        ax2d.text(width/2, -flange_length - 1, f"Width = {width:.1f}", ha="center", va="top", fontsize=10)
-        ax2d.text(-flange_length - 1, length/2, f"Length = {length:.1f}", ha="right", va="center", fontsize=10, rotation=90)
-        ax2d.text(width + flange_length + 1, length/2, f"Flange = {flange_length:.1f}", ha="left", va="center", fontsize=8)
+        ax2d.text(adjusted_width/2, -flange_length - 1, f"Width = {adjusted_width:.2f}", ha="center", va="top", fontsize=10)
+        ax2d.text(-flange_length - 1, adjusted_length/2, f"Length = {adjusted_length:.2f}", ha="right", va="center", fontsize=10, rotation=90)
+        ax2d.text(adjusted_width + flange_length + 1, adjusted_length/2, f"Flange = {flange_length:.2f}", ha="left", va="center", fontsize=8)
         
-        ax2d.set_xlim(-flange_length - 2, width + flange_length + 2)
-        ax2d.set_ylim(-flange_length - 2, length + flange_length + 2)
+        ax2d.set_xlim(-flange_length - 2, adjusted_width + flange_length + 2)
+        ax2d.set_ylim(-flange_length - 2, adjusted_length + flange_length + 2)
         ax2d.set_aspect("equal")
         ax2d.axis("off")
         ax2d.set_title(f"Chase Cover - {project_name or 'Unnamed Project'}")
@@ -231,8 +225,7 @@ if st.session_state.sketch_created:
         mime="image/jpeg"
     )
 
-    # Generate DXF (R2000, inches)
-    dxf_buffer = create_dxf_buffer(width, length, flange_length, add_kickout, st.session_state.holes, st.session_state.project_name)
+    dxf_buffer = create_dxf_buffer(adjusted_width, adjusted_length, flange_length, add_kickout, st.session_state.holes, st.session_state.project_name)
     
     st.download_button(
         label="Download DXF (R2000, inches)",
@@ -244,11 +237,10 @@ if st.session_state.sketch_created:
     if st.session_state.uploaded_files_data:
         st.subheader("Uploaded Photos")
         for name, data in st.session_state.uploaded_files_data:
-            data.seek(0)  # Reset buffer for display
+            data.seek(0)
             image = Image.open(data)
             st.image(image, caption=name, use_container_width=True)
 
-    # Email Export with SMTP
     st.subheader("Export Data")
     if st.button("Send to Shop"):
         try:
@@ -265,43 +257,40 @@ if st.session_state.sketch_created:
             
             body = "Chase Cover Measurements:\n\n"
             body += f"Project Name: {st.session_state.project_name or 'Unnamed Project'}\n"
-            body += f"Length (Front to Back): {length:.1f} inches\n"
-            body += f"Width (Left to Right): {width:.1f} inches\n"
-            body += f"Outer flange length (turndown): {flange_length:.1f} inches\n"
+            body += f"Length (Front to Back): {length:.2f} inches (Adjusted: {adjusted_length:.2f} inches with {fit_tolerance:.2f}\" tolerance)\n"
+            body += f"Width (Left to Right): {width:.2f} inches (Adjusted: {adjusted_width:.2f} inches with {fit_tolerance:.2f}\" tolerance)\n"
+            body += f"Outer flange length (turndown): {flange_length:.2f} inches\n"
             body += f"Add Kickout: {add_kickout}\n"
             body += f"Color: {st.session_state.color}"
             if st.session_state.color == "Other":
                 body += f" ({st.session_state.custom_color})\n"
             else:
                 body += "\n"
+            body += f"Windband: {st.session_state.windband}\n"
             body += f"Spark Arrestor: {st.session_state.spark_arrestor}"
             if st.session_state.spark_arrestor:
                 body += f" - Details: {st.session_state.spark_details}\n"
             else:
                 body += "\n"
-            body += f"Windband: {st.session_state.windband}\n"
             body += "Holes:\n"
             for i, hole in enumerate(st.session_state.holes):
-                body += f"  Hole {i+1}: Diameter={hole['diameter']:.1f} inches, Collar Height={hole['collar_height']:.1f} inches\n"
+                body += f"  Hole {i+1}: Diameter={hole['diameter']:.2f} inches, Collar Height={hole['collar_height']:.2f} inches\n"
                 for side, dist in hole['distances'].items():
-                    body += f"    Distance from {side.capitalize()}: {dist:.1f} inches\n"
+                    body += f"    Distance from {side.capitalize()}: {dist:.2f} inches\n"
             body += f"Additional Notes: {st.session_state.additional_notes or 'None'}\n"
             msg.attach(MIMEText(body, "plain"))
             
-            # Attach photos
             for name, data in st.session_state.uploaded_files_data:
-                data.seek(0)  # Reset buffer for attachment
+                data.seek(0)
                 attachment = MIMEApplication(data.read(), _subtype="png")
                 attachment.add_header("Content-Disposition", "attachment", filename=name)
                 msg.attach(attachment)
             
-            # Attach JPG
             st.session_state.jpg_buffer.seek(0)
             jpg_attachment = MIMEApplication(st.session_state.jpg_buffer.read(), _subtype="jpg")
             jpg_attachment.add_header("Content-Disposition", "attachment", filename=f"{st.session_state.project_name or 'chase_cover'}_sketch.jpg")
             msg.attach(jpg_attachment)
             
-            # Attach DXF (R2000, inches)
             dxf_buffer.seek(0)
             attachment = MIMEApplication(dxf_buffer.read(), _subtype="dxf")
             attachment.add_header("Content-Disposition", "attachment", filename=f"{st.session_state.project_name or 'chase_cover'}.dxf")
