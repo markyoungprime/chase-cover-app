@@ -10,6 +10,9 @@ import ezdxf
 import os
 import tempfile
 from dotenv import load_dotenv
+import json
+from datetime import datetime
+import math
 
 # Load environment variables
 load_dotenv()
@@ -60,99 +63,154 @@ if "sketch_created" not in st.session_state:
     st.session_state.color = "Not Selected"
     st.session_state.custom_color = ""
 
-# Input fields (Project Name first)
-project_name = st.text_input("Project Name (Owner name and/or property address)", value=st.session_state.project_name)
+# Fixed Project Name field at the top
+project_name = st.text_input("Project Name (Owner name and/or property address)", 
+                            value=st.session_state.project_name, 
+                            help="Enter the owner’s name, property address, or both (e.g., 'Smith - 123 Main St')")
 
-col1, col2 = st.columns(2)
-with col1:
-    width = st.number_input("Width (Left to Right)", min_value=0.0, step=0.1)
-with col2:
-    length = st.number_input("Length (Front to Back. Back is always cricket side)", min_value=0.0, step=0.1)
+# Callback to update uploaded_files_data immediately
+def update_uploaded_files():
+    uploaded = st.session_state.get("photo_upload_key", [])
+    st.session_state.uploaded_files_data = [(f.name, io.BytesIO(f.read())) for f in uploaded] if uploaded else []
 
-fit_tolerance = st.number_input("Fit Tolerance (Total, not per side)", 
-                                min_value=0.0, step=0.05, value=st.session_state.fit_tolerance, format="%.2f")
-
-col3, col4 = st.columns(2)
-with col3:
-    flange_length = st.number_input("Outer flange length (turndown)", min_value=0.0, step=0.1)
-with col4:
-    add_kickout = st.checkbox("Add Kickout?", value=True)
-
-color = st.selectbox("Color", ["Not Selected", "White", "Black", "Med Bronze", "Mill", "Match Metal", "Other"], index=0)
-if color == "Other":
-    custom_color = st.text_input("Custom Color", value=st.session_state.custom_color)
-else:
-    custom_color = ""
-
-col5, col6 = st.columns(2)
-with col5:
-    windband = st.checkbox("Windband", value=st.session_state.windband)
-with col6:
-    spark_arrestor = st.checkbox("Spark Arrestor", value=st.session_state.spark_arrestor)
-
-if spark_arrestor:
-    spark_details = st.text_input("Spark Arrestor Details", value=st.session_state.spark_details)
-else:
-    spark_details = ""
-
-additional_notes = st.text_area("Additional Notes", value=st.session_state.additional_notes)
-
-num_holes = st.number_input("Number of Holes", min_value=1, max_value=10, step=1, value=1)
-
+# Single form wrapping inputs (excluding photo upload)
 with st.form(key="measurement_form"):
-    with st.expander("Chimney Holes", expanded=True):
-        holes = []
-        all_valid = True
-        for i in range(num_holes):
-            st.write(f"Hole {i + 1}")
-            collar_height = st.number_input("Collar Height", min_value=0.0, step=0.1, key=f"collar_{i}")
-            st.write("Enter at least 3 measurements:")
-            
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                left = st.number_input("Left Distance", min_value=0.0, step=0.1, key=f"left_{i}")
-            with col2:
-                right = st.number_input("Right Distance", min_value=0.0, step=0.1, key=f"right_{i}")
-            with col3:
-                front = st.number_input("Front Distance", min_value=0.0, step=0.1, key=f"front_{i}")
-            with col4:
-                back = st.number_input("Back Distance", min_value=0.0, step=0.1, key=f"back_{i}")
-            
-            distances = {}
-            if left > 0: distances["left"] = left
-            if right > 0: distances["right"] = right
-            if front > 0: distances["front"] = front
-            if back > 0: distances["back"] = back
-            
-            if len(distances) < 3:
-                all_valid = False
-            else:
-                if "left" in distances and "right" in distances:
-                    diameter_x = width - distances["left"] - distances["right"]
-                    x_pos = distances["left"] + diameter_x / 2
-                elif "left" in distances:
-                    diameter_x = (width - distances["left"]) / 2
-                    x_pos = distances["left"] + diameter_x / 2
-                elif "right" in distances:
-                    diameter_x = (width - distances["right"]) / 2
-                    x_pos = width - distances["right"] - diameter_x / 2
+    # Tabs
+    tab1, tab2, tab3 = st.tabs(["📏 Dimensions", "🕳️ Holes", "⚙️ Options"])
+
+    with tab1:
+        col1, col2 = st.columns(2)
+        with col1:
+            width = st.number_input("Width (Left to Right)", min_value=0.0, step=0.1, 
+                                    help="Width of the chase cover base in inches")
+        with col2:
+            length = st.number_input("Length (Front to Back. Back is always cricket side)", min_value=0.0, step=0.1, 
+                                     help="Length of the chase cover base in inches (back is cricket side)")
+        
+        fit_tolerance = st.number_input("Fit Tolerance (Total, not per side)", 
+                                        min_value=0.0, step=0.05, value=st.session_state.fit_tolerance, format="%.2f", 
+                                        help="Extra inches added to total width and length for fit (e.g., 0.25 adds 0.125 per side)")
+        
+        col3, col4 = st.columns(2)
+        with col3:
+            flange_length = st.number_input("Outer flange length (turndown)", min_value=0.0, step=0.1, 
+                                            help="Length of the turndown flange in inches")
+        with col4:
+            add_kickout = st.checkbox("Add Kickout?", value=True, 
+                                      help="Check to add kickout extensions (increases total size)")
+
+    with tab2:
+        with st.expander("Chimney Holes", expanded=True):
+            num_holes = st.number_input("Number of Holes", min_value=1, max_value=10, step=1, value=1, 
+                                        help="Number of chimney holes to specify")
+            holes = []
+            all_valid = True
+            for i in range(num_holes):
+                st.write(f"Hole {i + 1}")
+                # Default calculated diameter
+                diameter = 0.0
+                x_pos = 0.0
+                y_pos = 0.0
+                diameter_x = 0.0
+                diameter_y = 0.0
                 
-                if "front" in distances and "back" in distances:
-                    diameter_y = length - distances["front"] - distances["back"]
-                    y_pos = distances["back"] + diameter_y / 2
-                    diameter = (diameter_x + diameter_y) / 2 if "left" in distances and "right" in distances else diameter_y
-                elif "back" in distances:
-                    diameter = diameter_x
-                    y_pos = distances["back"] + diameter / 2
-                elif "front" in distances:
-                    diameter = diameter_x
-                    y_pos = length - distances["front"] - diameter / 2
+                collar_height = st.number_input("Collar Height", min_value=0.0, step=0.1, key=f"collar_{i}", 
+                                                help="Height of the collar in inches")
+                st.write("Enter at least 3 measurements:")
                 
-                holes.append({"distances": distances, "diameter": diameter, "x": x_pos, "y": y_pos, "collar_height": collar_height})
-    
-    st.subheader("Upload Photos")
-    uploaded_files = st.file_uploader("Attach photos from the field", accept_multiple_files=True, type=["jpg", "png"])
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    left = st.number_input("Left Distance", min_value=0.0, step=0.1, key=f"left_{i}", 
+                                           help="Distance from left edge to hole center in inches")
+                with col2:
+                    right = st.number_input("Right Distance", min_value=0.0, step=0.1, key=f"right_{i}", 
+                                            help="Distance from right edge to hole center in inches")
+                with col3:
+                    back = st.number_input("Back Distance", min_value=0.0, step=0.1, key=f"back_{i}", 
+                                           help="Distance from back edge to hole center in inches")
+                with col4:
+                    front = st.number_input("Front Distance", min_value=0.0, step=0.1, key=f"front_{i}", 
+                                            help="Distance from front edge to hole center in inches")
+                
+                distances = {}
+                if left > 0: distances["left"] = left
+                if right > 0: distances["right"] = right
+                if front > 0: distances["front"] = front
+                if back > 0: distances["back"] = back
+                
+                if len(distances) >= 3:
+                    if "left" in distances and "right" in distances:
+                        diameter_x = width - distances["left"] - distances["right"]
+                        x_pos = distances["left"] + diameter_x / 2
+                    elif "left" in distances:
+                        diameter_x = (width - distances["left"]) / 2
+                        x_pos = distances["left"] + diameter_x / 2
+                    elif "right" in distances:
+                        diameter_x = (width - distances["right"]) / 2
+                        x_pos = width - distances["right"] - diameter_x / 2
+                    
+                    if "front" in distances and "back" in distances:
+                        diameter_y = length - distances["front"] - distances["back"]
+                        y_pos = distances["back"] + diameter_y / 2
+                        diameter = (diameter_x + diameter_y) / 2 if "left" in distances and "right" in distances else diameter_y
+                    elif "back" in distances:
+                        diameter = diameter_x
+                        y_pos = distances["back"] + diameter / 2
+                    elif "front" in distances:
+                        diameter = diameter_x
+                        y_pos = length - distances["front"] - diameter / 2
+                else:
+                    all_valid = False
+                
+                # Display Calculated Diameter result below title
+                st.write(f"Calculated Diameter: {diameter:.2f} inches")
+                measured_diameter = st.number_input("Measured Diameter (optional)", min_value=0.0, step=0.1, key=f"measured_diameter_{i}", 
+                                                    help="Enter the manually measured diameter if different from calculated")
+                
+                # Check for diameter mismatch and display warning
+                if ("left" in distances and "right" in distances) and ("front" in distances and "back" in distances):
+                    if abs(diameter_x - diameter_y) > 0.1:  # Tolerance of 0.1 inches
+                        st.warning(f"Hole {i+1}: Calculated diameters mismatch - Left-Right: {diameter_x:.2f} inches, Back-Front: {diameter_y:.2f} inches")
+                
+                # Use measured diameter if provided, else calculated
+                final_diameter = measured_diameter if measured_diameter > 0 else diameter
+                holes.append({"distances": distances, "diameter": final_diameter, "x": x_pos, "y": y_pos, "collar_height": collar_height, "measured_diameter": measured_diameter})
+
+    with tab3:
+        color = st.selectbox("Color", ["Not Selected", "White", "Black", "Med Bronze", "Mill", "Match Metal", "Other"], index=0, 
+                             help="Select or specify the cap’s color")
+        if color == "Other":
+            custom_color = st.text_input("Custom Color", value=st.session_state.custom_color, 
+                                        help="Specify a custom color if 'Other' is selected")
+        else:
+            custom_color = ""
+        
+        col5, col6 = st.columns(2)
+        with col5:
+            windband = st.checkbox("Windband", value=st.session_state.windband, 
+                                  help="Check if a windband is required")
+        with col6:
+            spark_arrestor = st.checkbox("Spark Arrestor", value=st.session_state.spark_arrestor, 
+                                        help="Check if a spark arrestor is needed")
+        
+        if spark_arrestor:
+            spark_details = st.text_input("Spark Arrestor Details", value=st.session_state.spark_details, 
+                                         help="Additional details for the spark arrestor (if applicable)")
+        else:
+            spark_details = ""
+        
+        additional_notes = st.text_area("Additional Notes", value=st.session_state.additional_notes, 
+                                       help="Any extra notes for the shop")
+
+    # Create Sketch button below tabs, inside form
+    st.write("")  # Spacer
     submit_button = st.form_submit_button(label="Create Sketch")
+
+# Upload Photos outside the form, below tabs
+st.subheader("📷 Upload Photos")
+st.file_uploader("Attach photos from the field", accept_multiple_files=True, type=["jpg", "png"], 
+                 help="Upload photos from the field (JPG/PNG) - required before sending to shop", 
+                 key="photo_upload_key", on_change=update_uploaded_files)
 
 # Process Submission
 if submit_button:
@@ -161,7 +219,6 @@ if submit_button:
     else:
         st.session_state.sketch_created = True
         st.session_state.holes = holes
-        st.session_state.uploaded_files_data = [(f.name, io.BytesIO(f.read())) for f in uploaded_files] if uploaded_files else []
         st.session_state.project_name = project_name
         st.session_state.spark_arrestor = spark_arrestor
         st.session_state.spark_details = spark_details
@@ -212,26 +269,19 @@ if submit_button:
         st.session_state.fig2d = fig2d
         st.session_state.jpg_buffer = jpg_buffer
         plt.close(fig2d)
+        st.session_state.fig2d = None  # Reset fig2d to avoid reuse
 
 # Display Persisted Outputs
-if st.session_state.sketch_created:
+if st.session_state.sketch_created and st.session_state.jpg_buffer:
     st.subheader("2D Sketch (Top-Down View with Measurements)")
-    st.pyplot(st.session_state.fig2d)
+    st.image(st.session_state.jpg_buffer.getvalue(), use_container_width=True)
     
+    # Save Sketch button
     st.download_button(
-        label="Download Sketch as JPG",
+        label="Save Sketch to Device",
         data=st.session_state.jpg_buffer,
         file_name=f"{st.session_state.project_name or 'chase_cover'}_sketch.jpg",
         mime="image/jpeg"
-    )
-
-    dxf_buffer = create_dxf_buffer(adjusted_width, adjusted_length, flange_length, add_kickout, st.session_state.holes, st.session_state.project_name)
-    
-    st.download_button(
-        label="Download DXF (R2000, inches)",
-        data=dxf_buffer,
-        file_name=f"{st.session_state.project_name or 'chase_cover'}.dxf",
-        mime="application/dxf"
     )
 
     if st.session_state.uploaded_files_data:
@@ -239,16 +289,24 @@ if st.session_state.sketch_created:
         for name, data in st.session_state.uploaded_files_data:
             data.seek(0)
             image = Image.open(data)
-            st.image(image, caption=name, use_container_width=True)
+            st.image(image, caption=name, use_container_width=True)  # Updated to use_container_width
 
     st.subheader("Export Data")
-    if st.button("Send to Shop"):
+    if not st.session_state.uploaded_files_data:
+        st.warning("Please upload at least one photo before sending to shop.")
+    send_button = st.button("✉️ Send to Shop", disabled=not bool(st.session_state.uploaded_files_data))
+    if send_button and st.session_state.uploaded_files_data:
         try:
             sender_email = os.getenv("SENDER_EMAIL")
             sender_password = os.getenv("SENDER_PASSWORD")
             recipient_email = "mark@primeroofingfl.com"
             if not sender_email or not sender_password:
                 raise ValueError("Email credentials not set in environment variables.")
+            
+            dxf_buffer = create_dxf_buffer(adjusted_width, adjusted_length, flange_length, add_kickout, st.session_state.holes, st.session_state.project_name)
+            
+            total_width = adjusted_width + 2 * flange_length + (1.75 if add_kickout else 0.75)
+            total_length = adjusted_length + 2 * flange_length + (1.75 if add_kickout else 0.75)
             
             msg = MIMEMultipart()
             msg["From"] = sender_email
@@ -259,6 +317,8 @@ if st.session_state.sketch_created:
             body += f"Project Name: {st.session_state.project_name or 'Unnamed Project'}\n"
             body += f"Length (Front to Back): {length:.2f} inches (Adjusted: {adjusted_length:.2f} inches with {fit_tolerance:.2f}\" tolerance)\n"
             body += f"Width (Left to Right): {width:.2f} inches (Adjusted: {adjusted_width:.2f} inches with {fit_tolerance:.2f}\" tolerance)\n"
+            if total_length >= 48 or total_width >= 48:
+                body += "**REQUIRES MORE THAN 1 SHEET TO FABRICATE**\n"
             body += f"Outer flange length (turndown): {flange_length:.2f} inches\n"
             body += f"Add Kickout: {add_kickout}\n"
             body += f"Color: {st.session_state.color}"
@@ -274,8 +334,12 @@ if st.session_state.sketch_created:
                 body += "\n"
             body += "Holes:\n"
             for i, hole in enumerate(st.session_state.holes):
-                body += f"  Hole {i+1}: Diameter={hole['diameter']:.2f} inches, Collar Height={hole['collar_height']:.2f} inches\n"
-                for side, dist in hole['distances'].items():
+                circumference = math.pi * hole["diameter"]
+                body += f"  Hole {i+1}: Diameter={hole['diameter']:.2f} inches, Circumference={circumference:.2f} inches, Collar Height={hole['collar_height']:.2f} inches"
+                if hole["measured_diameter"] > 0:
+                    body += f", Measured Diameter={hole['measured_diameter']:.2f} inches"
+                body += "\n"
+                for side, dist in hole["distances"].items():
                     body += f"    Distance from {side.capitalize()}: {dist:.2f} inches\n"
             body += f"Additional Notes: {st.session_state.additional_notes or 'None'}\n"
             msg.attach(MIMEText(body, "plain"))
@@ -301,14 +365,44 @@ if st.session_state.sketch_created:
                 server.login(sender_email, sender_password)
                 server.send_message(msg)
             st.success("Data, photos, JPG, and DXF sent to Prime Roofing Shop")
+
+            # Autosave JSON only
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            base_filename = f"{st.session_state.project_name or 'chase_cover'}_{timestamp}"
+            
+            data_to_save = {
+                "project_name": st.session_state.project_name,
+                "width": width,
+                "length": length,
+                "fit_tolerance": fit_tolerance,
+                "flange_length": flange_length,
+                "add_kickout": add_kickout,
+                "holes": [{**hole, "circumference": math.pi * hole["diameter"]} for hole in st.session_state.holes],
+                "color": st.session_state.color,
+                "custom_color": st.session_state.custom_color,
+                "windband": st.session_state.windband,
+                "spark_arrestor": st.session_state.spark_arrestor,
+                "spark_details": st.session_state.spark_details,
+                "additional_notes": st.session_state.additional_notes
+            }
+            json_buffer = io.BytesIO(json.dumps(data_to_save, indent=2).encode('utf-8'))
+            st.download_button(
+                label="Download Saved Data JSON",
+                data=json_buffer,
+                file_name=f"{base_filename}_data.json",
+                mime="application/json",
+                key=f"json_download_{timestamp}"
+            )
+
         except Exception as e:
             st.error(f"Failed to send email: {e}")
 
 st.sidebar.header("Instructions")
 st.sidebar.write("""
-1. Enter the measurements and number of holes.
-2. Enter hole details (at least 3 distances per hole).
-3. Add notes and upload photos.
-4. Click 'Create Sketch' to see the 2D sketch.
-5. Click 'Send to Shop' to send data, photos, and DXF to the shop.
+1. Enter project name at the top.
+2. Fill in dimensions, holes, and options across the tabs.
+3. Add at least 3 hole measurements in the 'Holes' tab.
+4. Upload photos below tabs (required before sending).
+5. Click 'Create Sketch' below tabs to see the 2D sketch.
+6. Use 'Save Sketch to Device' to save the JPG or 'Send to Shop' (below 'Export Data') to email data, photos, and DXF with JSON autosave.
 """)
